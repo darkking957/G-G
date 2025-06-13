@@ -1,0 +1,9 @@
+{instruction}
+
+When answering, please follow these steps:
+1. First, identify all possible answer candidates.
+2. For each candidate, analyze the evidence supporting it.
+3. Rank the candidates by confidence level.
+4. Return ONLY the highest confidence answer(s).
+
+{input}

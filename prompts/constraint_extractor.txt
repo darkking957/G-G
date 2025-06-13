@@ -1,0 +1,20 @@
+# prompts/constraint_extractor.txt
+Analyze the question: "{question}". 
+Extract key semantic constraints that the answer must satisfy.
+
+Constraints to consider:
+- **entity_type**: What type of entity should the answer be? (e.g., Person, Location, Organization, Date, Number)
+- **temporal_relation**: Any time-related constraints? (e.g., before/after a date, during a period)
+- **spatial_relation**: Any location-related constraints? (e.g., in a country, near a place)
+- **quantity**: Any numerical constraints? (e.g., more than, exactly, at least)
+- **attribute**: Specific attributes the answer must have (e.g., gender, nationality, status)
+- **relation_type**: What relationship should the answer have with entities in the question?
+
+Output ONLY valid JSON. Example:
+{
+    "entity_type": "Person",
+    "temporal_relation": "after 2000",
+    "attribute": {"role": "director"}
+}
+
+If no specific constraint is found, return: {}

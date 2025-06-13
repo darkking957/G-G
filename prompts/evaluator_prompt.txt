@@ -1,0 +1,26 @@
+# prompts/evaluator_prompt.txt
+**Task**: Evaluate how well a reasoning path answers a question.
+
+**Question**: {question}
+**Semantic Constraints**: {constraints_json}
+**Candidate Path**: {path_str}
+
+**Evaluation Criteria**:
+1. **Relevance**: Does the path directly address what the question asks?
+2. **Completeness**: Will following this path lead to a complete answer?
+3. **Constraint Satisfaction**: Will the path lead to entities satisfying the constraints?
+4. **Logical Soundness**: Is the sequence of relations logically coherent?
+5. **Specificity**: Is the path specific enough to avoid ambiguous results?
+
+**Scoring Guide**:
+- 0.9-1.0: Perfect path that directly and completely answers the question
+- 0.7-0.8: Good path with minor issues or slight indirection
+- 0.5-0.6: Partially relevant path that may lead to useful information
+- 0.3-0.4: Weak connection to the question
+- 0.0-0.2: Irrelevant or incorrect path
+
+**Output** (JSON only):
+{
+    "score": 0.85,
+    "reasoning": "The path directly connects the subject to the answer type through appropriate relations..."
+}

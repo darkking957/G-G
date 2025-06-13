@@ -1,0 +1,68 @@
+# configs/got_config.yaml
+# Graph of Thoughts Configuration
+
+# GoT Engine Settings
+engine:
+  max_iterations: 3  # Maximum number of GoT iterations
+  beam_width: 5  # Number of top thoughts to keep in each iteration
+  score_threshold: 0.7  # Minimum score to keep a thought
+  enable_feedback: true  # Enable feedback loop mechanism
+  use_graph_attention: true  # Use GAT for thought enhancement
+  aggregation_strategy: "adaptive"  # adaptive, greedy, exhaustive, none
+
+# Validation Settings
+validation:
+  mode: "strict"  # strict, relaxed
+  max_workers: 4  # Parallel validation workers
+  cache_size: 10000  # Validation cache size
+  
+# Evaluation Settings
+evaluation:
+  batch_size: 5  # Batch size for parallel evaluation
+  use_constraints: true  # Extract and use semantic constraints
+  confidence_threshold: 0.8  # Minimum confidence for evaluation
+
+# Aggregation Settings
+aggregation:
+  max_pairs_per_iteration: 10  # Maximum aggregation pairs to try
+  min_similarity: 0.3  # Minimum similarity for aggregation
+  strategies:
+    - sequential
+    - parallel
+    - hierarchical
+    - union
+    - bridge
+
+# Graph Attention Network Settings
+gat:
+  input_dim: 768  # Input embedding dimension
+  hidden_dim: 256  # Hidden layer dimension
+  output_dim: 128  # Output dimension
+  num_heads: 8  # Number of attention heads
+  num_layers: 2  # Number of GAT layers
+  dropout: 0.6  # Dropout rate
+  alpha: 0.2  # LeakyReLU alpha
+
+# Feedback Controller Settings
+feedback:
+  window_size: 5  # History window for stagnation detection
+  improvement_threshold: 0.01  # Minimum improvement to avoid stagnation
+  max_strategies_per_thought: 2  # Maximum improvement strategies
+  
+# Thought Graph Settings
+thought_graph:
+  prune_threshold: 0.3  # Score threshold for pruning
+  max_nodes: 100  # Maximum nodes in graph
+  visualization: true  # Enable visualization
+  
+# LLM Settings
+llm:
+  temperature: 0.7  # Temperature for generation
+  max_tokens: 200  # Maximum tokens per generation
+  top_p: 0.9  # Top-p sampling
+  
+# Logging Settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  save_graphs: true  # Save thought graphs
+  save_iterations: true  # Save intermediate results

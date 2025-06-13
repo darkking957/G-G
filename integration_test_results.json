@@ -1,0 +1,12 @@
+{
+  "results": {
+    "File Structure": false,
+    "Python Imports": true,
+    "GoT Configuration": true,
+    "Minimal GoT": true,
+    "Command Compatibility": true
+  },
+  "passed": 4,
+  "total": 5,
+  "success": false
+}

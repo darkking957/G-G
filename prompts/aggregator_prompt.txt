@@ -1,0 +1,42 @@
+# prompts/aggregator_prompt.txt
+**Task**: Combine two reasoning paths to create a more powerful composite path.
+
+**Question**: {question}
+**Path 1**: {thought1_str}
+**Path 2**: {thought2_str}
+
+**Aggregation Strategies**:
+
+1. **Sequential Connection**: If Path 1's endpoint can be Path 2's starting point
+   - Result: Path1 → Path2
+   - Use when: Paths form a natural sequence
+
+2. **Parallel Combination**: If paths answer different aspects of the question
+   - Result: [Path1, Path2] (both needed)
+   - Use when: Question has multiple parts
+
+3. **Union/Merge**: If paths overlap or complement each other
+   - Result: Combined unique relations
+   - Use when: Paths share common elements
+
+4. **Refinement**: If one path generalizes/specializes the other
+   - Result: The more specific path
+   - Use when: One path subsumes the other
+
+5. **Bridge Construction**: If paths can be connected via intermediate relations
+   - Result: Path1 → [bridge] → Path2
+   - Use when: Paths are related but not directly connectable
+
+**Analysis Required**:
+1. Identify how the paths relate to each other
+2. Determine which strategy best serves the question
+3. Construct the aggregated path
+4. Explain why this aggregation improves the answer
+
+**Output** (JSON only):
+{
+    "aggregated_path": ["relation1", "relation2", "relation3"],
+    "aggregation_type": "sequential",
+    "explanation": "Path 1 finds the company, Path 2 finds its CEO, creating a complete answer",
+    "confidence": 0.9
+}
