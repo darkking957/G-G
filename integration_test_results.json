@@ -2,11 +2,11 @@
   "results": {
     "File Structure": false,
     "Python Imports": true,
-    "GoT Configuration": true,
+    "GoT Configuration": false,
     "Minimal GoT": true,
     "Command Compatibility": true
   },
-  "passed": 4,
+  "passed": 3,
   "total": 5,
   "success": false
 }

@@ -4,7 +4,8 @@ import string
 
 def read_prompt(prompt_path):
     with open(prompt_path, 'r') as f:
-        prompt_template = f"""{f.read()}"""
+        #prompt_template = f"""{f.read()}"""
+        prompt_template = f.read()
     return prompt_template
 
 def load_jsonl(file_path):

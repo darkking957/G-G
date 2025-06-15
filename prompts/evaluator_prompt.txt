@@ -20,7 +20,7 @@
 - 0.0-0.2: Irrelevant or incorrect path
 
 **Output** (JSON only):
-{
+{{
     "score": 0.85,
     "reasoning": "The path directly connects the subject to the answer type through appropriate relations..."
-}
+}}

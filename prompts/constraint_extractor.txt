@@ -11,10 +11,6 @@ Constraints to consider:
 - **relation_type**: What relationship should the answer have with entities in the question?
 
 Output ONLY valid JSON. Example:
-{
-    "entity_type": "Person",
-    "temporal_relation": "after 2000",
-    "attribute": {"role": "director"}
-}
+{{"entity_type":"Person","temporal_relation":"after 2000","attribute":{{"role":"director"}}}}
 
-If no specific constraint is found, return: {}
+If no specific constraint is found, return: {{}}

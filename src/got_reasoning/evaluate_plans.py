@@ -8,7 +8,7 @@ import json
 import asyncio
 import logging
 from dataclasses import dataclass
-
+import re
 from utils import read_prompt, rule_to_string
 
 logger = logging.getLogger(__name__)
@@ -51,29 +51,27 @@ class SemanticEvaluator:
         """获取默认提示词模板"""
         if filename == "constraint_extractor.txt":
             return """Analyze the question: "{question}". 
-Extract key semantic constraints for the answer in JSON format. 
-Constraints can include but are not limited to: "entity_type", "gender", "temporal_relation", "spatial_relation", "quantity", "attribute".
-If no specific constraint is found, return an empty JSON object {{}}.
 
-Output ONLY valid JSON."""
+    Your task is to extract semantic constraints for the answer.
+
+    Return your response as a JSON object. Example format:
+    {{"entity_type": "Person", "temporal_relation": "after 2000"}}
+
+    If no constraints found, return: {{}}
+
+    Important: Return ONLY the JSON object, no other text."""
         
         elif filename == "evaluator_prompt.txt":
-            return """**Context:**
-- User Question: "{question}"
-- Semantic Constraints: {constraints_json}
-- Candidate Path: "{path_str}"
+            return """Question: {question}
+    Path: {path_str}
+    Constraints: {constraints_json}
 
-**Task:**
-Evaluate the semantic alignment of the Candidate Path with the User Question. 
-A good path must lead to an answer that satisfies the semantic constraints.
+    Evaluate how well this path answers the question (0.0 to 1.0).
 
-Consider:
-1. Does the path capture the core intent of the question?
-2. Will following this path likely lead to entities that match the constraints?
-3. Is the path logically sound for answering this type of question?
+    Return your response as a JSON object with this exact format:
+    {{"score": 0.85, "reasoning": "The path directly connects..."}}
 
-Provide a score from 0.0 to 1.0 and a brief justification.
-Output ONLY in JSON format: {{"score": <float>, "reasoning": "<string>"}}"""
+    Important: Return ONLY the JSON object, no other text."""
         
         return ""
         
@@ -104,7 +102,22 @@ Output ONLY in JSON format: {{"score": <float>, "reasoning": "<string>"}}"""
         
         try:
             response = self.llm_model.generate_sentence(prompt)
-            constraints = json.loads(response)
+            
+            # 添加调试信息
+            logger.debug(f"Constraint extraction response: {response[:100]}...")
+            
+            # 清理响应（去除可能的额外文本）
+            response = response.strip()
+            
+            # 尝试找到 JSON 部分
+            if '{' in response and '}' in response:
+                start = response.find('{')
+                end = response.rfind('}') + 1
+                json_str = response[start:end]
+            else:
+                json_str = response
+                
+            constraints = json.loads(json_str)
             
             # 验证是否为有效的JSON
             if not isinstance(constraints, dict):
@@ -112,13 +125,14 @@ Output ONLY in JSON format: {{"score": <float>, "reasoning": "<string>"}}"""
                 
         except (json.JSONDecodeError, Exception) as e:
             logger.warning(f"Failed to extract constraints: {e}")
+            logger.debug(f"Raw response was: {response if 'response' in locals() else 'No response'}")
             constraints = {}
             
         return constraints
         
     async def _evaluate_path(self, question: str, path: List[str], 
-                           constraints: Dict[str, Any],
-                           context: Optional[Dict[str, Any]] = None) -> EvaluationResult:
+                       constraints: Dict[str, Any],
+                       context: Optional[Dict[str, Any]] = None) -> EvaluationResult:
         """评估单条路径"""
         # 将路径转换为字符串表示
         path_str = self._format_path(path)
@@ -138,7 +152,22 @@ Output ONLY in JSON format: {{"score": <float>, "reasoning": "<string>"}}"""
             
         try:
             response = self.llm_model.generate_sentence(prompt)
-            result = json.loads(response)
+            
+            # 添加调试信息
+            logger.debug(f"Evaluation response: {response[:100]}...")
+            
+            # 清理响应
+            response = response.strip()
+            
+            # 尝试提取 JSON
+            if '{' in response and '}' in response:
+                start = response.find('{')
+                end = response.rfind('}') + 1
+                json_str = response[start:end]
+            else:
+                json_str = response
+                
+            result = json.loads(json_str)
             
             score = float(result.get("score", 0.0))
             reasoning = result.get("reasoning", "No reasoning provided")
@@ -146,20 +175,23 @@ Output ONLY in JSON format: {{"score": <float>, "reasoning": "<string>"}}"""
             # 确保分数在有效范围内
             score = max(0.0, min(1.0, score))
             
-            # 应用评分调整：避免过于严格的评分
+            # 应用评分调整
             adjusted_score = self._adjust_score(score, path, reasoning)
             
         except (json.JSONDecodeError, ValueError, Exception) as e:
             logger.warning(f"Failed to evaluate path: {e}")
-            score = 0.0
-            adjusted_score = 0.0
+            logger.debug(f"Raw response was: {response if 'response' in locals() else 'No response'}")
+            
+            # 提供默认评分
+            score = 0.5  # 给一个中等的默认分数
+            adjusted_score = self._adjust_score(score, path, "Failed to parse LLM response")
             reasoning = f"Evaluation failed: {str(e)}"
             
         return EvaluationResult(
             score=adjusted_score,
             reasoning=reasoning,
             constraints=constraints,
-            confidence=self._compute_confidence(score, reasoning)
+            confidence=self._compute_confidence(adjusted_score, reasoning)
         )
         
     def _adjust_score(self, score: float, path: List[str], reasoning: str) -> float:
@@ -281,3 +313,5 @@ Which path is better and why? Provide a brief analysis."""
             "comparison": comparison,
             "better_path": 1 if score1 > score2 else 2
         }
+
+    

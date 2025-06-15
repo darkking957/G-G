@@ -1,5 +1,5 @@
 # src/qa_prediction/gen_rule_path.py
-# 集成GoT推理 - 修复序列化问题
+# 修改版本：启用完整的GoT推理功能
 
 import json
 import sys
@@ -18,21 +18,47 @@ from peft import AutoPeftModelForCausalLM
 import torch
 import re
 import asyncio
+import logging
 
 # 导入GoT模块
-try:
-    from got_reasoning.got_engine import GoTEngine, GoTConfig
-    from got_reasoning.minimal_got import integrate_minimal_got
-    GOT_AVAILABLE = True
-except ImportError:
-    GOT_AVAILABLE = False
-    print("Warning: GoT modules not found. Running without GoT enhancement.")
+from got_reasoning.got_engine import GoTEngine, GoTConfig
+from got_reasoning.thought_graph import ThoughtGraph
+from got_reasoning.validate_plans import PlanValidator
+from got_reasoning.evaluate_plans import SemanticEvaluator
+from got_reasoning.aggregate_plans import ThoughtAggregator
 
-N_CPUS = (
-    int(os.environ["SLURM_CPUS_PER_TASK"]) if "SLURM_CPUS_PER_TASK" in os.environ else 1
-)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+N_CPUS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
 PATH_RE = r"<PATH>(.*)<\/PATH>"
 INSTRUCTION = """Please generate a valid relation path that can be helpful for answering the following question: """
+
+
+class LLMWrapper:
+    """LLM包装器，提供给GoT组件使用"""
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+        
+    def generate_sentence(self, prompt, temperature=0.7):
+        """生成单个句子"""
+        inputs = self.tokenizer.encode(prompt, return_tensors="pt").to("cuda")
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs,
+                max_new_tokens=200,
+                temperature=temperature,
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+        response = self.tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
+        return response.strip()
+    
+    def tokenize(self, text):
+        """分词"""
+        return self.tokenizer.tokenize(text)
 
 
 def get_output_file(path, force=False):
@@ -73,14 +99,15 @@ def parse_prediction(prediction):
     return results
 
 
-def generate_seq(
-    model, input_text, tokenizer, num_beam=3, do_sample=False, max_new_tokens=100
-):
+def generate_seq(model, input_text, tokenizer, num_beam=3, do_sample=False, max_new_tokens=100):
     """Generate sequences using beam search"""
-    input_ids = tokenizer.encode(input_text, return_tensors="pt").to("cuda")
-    
+    #input_ids = tokenizer.encode(input_text, return_tensors="pt").to("cuda")
+    inputs = tokenizer(input_text, return_tensors="pt", padding=True).to("cuda")
+    input_ids = inputs.input_ids
+    attention_mask = inputs.attention_mask
     output = model.generate(
         input_ids=input_ids,
+        attention_mask=attention_mask,  # 添加这一行
         num_beams=num_beam,
         num_return_sequences=num_beam,
         early_stopping=False,
@@ -88,6 +115,7 @@ def generate_seq(
         return_dict_in_generate=True,
         output_scores=True,
         max_new_tokens=max_new_tokens,
+        pad_token_id=tokenizer.pad_token_id  # 使用pad_token_id而不是eos_token_id
     )
     
     prediction = tokenizer.batch_decode(
@@ -105,11 +133,31 @@ def generate_seq(
     return {"paths": prediction, "scores": scores, "norm_scores": norm_scores}
 
 
+async def apply_got_reasoning(question, initial_paths, kg_graph, llm_wrapper, config):
+    """应用完整的GoT推理"""
+    # 创建GoT引擎
+    engine = GoTEngine(config, llm_wrapper, kg_graph)
+    
+    # 执行推理
+    result = await engine.reason(question, initial_paths)
+    
+    # 生成解释
+    explanation = await engine.explain_reasoning(result)
+    result["explanation"] = explanation
+    
+    return result
+
+
 def gen_prediction(args):
-    """主预测函数 - 支持GoT增强"""
+    """主预测函数 - 支持完整GoT"""
+    # 加载模型
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=False)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.unk_token
+    elif tokenizer.pad_token == tokenizer.eos_token:
+        tokenizer.pad_token = tokenizer.unk_token
     if args.lora or os.path.exists(args.model_path + "/adapter_config.json"):
-        print("Load LORA model")
+        logger.info("Loading LORA model")
         model = AutoPeftModelForCausalLM.from_pretrained(
             args.model_path, device_map="auto", torch_dtype=torch.bfloat16
         )
@@ -121,9 +169,12 @@ def gen_prediction(args):
             use_auth_token=True,
         )
 
+    # 创建LLM包装器
+    llm_wrapper = LLMWrapper(model, tokenizer)
+
     input_file = os.path.join(args.data_path, args.d)
     output_dir = os.path.join(args.output_path, args.d, args.model_name, args.split)
-    print("Save results to: ", output_dir)
+    logger.info(f"Save results to: {output_dir}")
 
     # Load dataset
     dataset = load_dataset(input_file, split=args.split)
@@ -136,16 +187,13 @@ def gen_prediction(args):
         sample["text"] = prompter.format(
             instruction=INSTRUCTION, message=sample["question"]
         )
-        # Find ground-truth paths for each Q-P pair
-        # 不要将graph对象保存到dataset中，避免序列化错误
+        # Find ground-truth paths
         graph = utils.build_graph(sample["graph"])
         paths = utils.get_truth_paths(sample["q_entity"], sample["a_entity"], graph)
         ground_paths = set()
         for path in paths:
             ground_paths.add(tuple([p[1] for p in path]))
         sample["ground_paths"] = list(ground_paths)
-        # 不保存graph对象
-        # sample["kg_graph"] = graph  # 删除这行
         return sample
 
     dataset = dataset.map(prepare_dataset, num_proc=N_CPUS)
@@ -154,11 +202,8 @@ def gen_prediction(args):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # 配置GoT（如果启用）
-    got_engine = None
-    llm_wrapper = None
-    if args.use_got and GOT_AVAILABLE:
-        # 使用保守配置
+    # 配置GoT
+    if args.use_got:
         got_config = GoTConfig(
             max_iterations=args.got_iterations,
             beam_width=args.got_beam_width,
@@ -166,43 +211,21 @@ def gen_prediction(args):
             enable_feedback=args.got_enable_feedback,
             use_graph_attention=args.got_use_attention,
             aggregation_strategy=args.got_aggregation,
-            # 保守配置
-            preserve_original=True,  # 总是保留原始路径
-            max_enhanced_paths=3,    # 限制增强数量
-            enable_minimal_mode=args.got_minimal_mode  # 使用最小化模式
+            validation_mode="relaxed",
+            # 关键：禁用最小化模式
+            enable_minimal_mode=False,
+            preserve_original=False
         )
-        
-        # 创建LLM包装器
-        class LLMWrapper:
-            def __init__(self, model, tokenizer):
-                self.model = model
-                self.tokenizer = tokenizer
-                
-            def generate_sentence(self, prompt):
-                inputs = self.tokenizer.encode(prompt, return_tensors="pt").to("cuda")
-                with torch.no_grad():
-                    outputs = self.model.generate(
-                        inputs,
-                        max_new_tokens=200,
-                        temperature=0.7,
-                        do_sample=True
-                    )
-                return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        llm_wrapper = LLMWrapper(model, tokenizer)
+        logger.info(f"GoT Configuration: {got_config}")
     
     # 设置输出文件名
-    suffix = ""
-    if args.use_got and GOT_AVAILABLE:
-        suffix = "_got"
-    elif args.use_minimal_got and GOT_AVAILABLE:
-        suffix = "_minimal"
-        
+    suffix = "_got" if args.use_got else ""
     prediction_file = os.path.join(
         output_dir, f"predictions_{args.n_beam}_{args.do_sample}{suffix}.jsonl"
     )
     f, processed_results = get_output_file(prediction_file, force=args.force)
     
+    # 处理每个样本
     for data in tqdm(dataset):
         question = data["question"]
         input_text = data["text"]
@@ -222,50 +245,44 @@ def gen_prediction(args):
         )
         initial_paths = parse_prediction(raw_output["paths"])
         
-        # 步骤2：应用GoT增强（如果启用）
+        # 步骤2：应用GoT增强
         got_info = None
-        if args.use_got and initial_paths and GOT_AVAILABLE:
-            # 重新构建graph（因为没有保存在dataset中）
+        if args.use_got and initial_paths:
+            # 构建知识图谱
             kg_graph = utils.build_graph(data["graph"])
-            got_engine = GoTEngine(got_config, llm_wrapper, kg_graph)
             
-            # 执行GoT推理
-            if got_config.enable_minimal_mode:
-                # 同步调用
-                got_result = got_engine._minimal_reasoning(question, initial_paths)
-            else:
-                # 异步调用
-                got_result = asyncio.run(got_engine.reason(question, initial_paths))
+            # 执行完整的GoT推理
+            logger.info(f"Applying GoT reasoning for question: {question[:50]}...")
+            got_result = asyncio.run(
+                apply_got_reasoning(question, initial_paths, kg_graph, llm_wrapper, got_config)
+            )
             
-            # 提取增强后的路径
+            # 提取结果
             rel_paths = got_result.get("reasoning_paths", initial_paths)
             
             # 保存GoT信息
             got_info = {
-                "thought_graph_size": got_result.get("total_thoughts", 0),
-                "iterations": got_result.get("iterations", 1),
                 "best_score": got_result.get("score", 0),
+                "iterations": got_result.get("iterations", 0),
+                "total_thoughts": got_result.get("total_thoughts", 0),
+                "statistics": got_result.get("statistics", {}),
+                "explanation": got_result.get("explanation", ""),
                 "initial_paths": initial_paths,
                 "enhanced_paths": rel_paths,
-                "minimal_mode": got_result.get("minimal_mode", False)
-            }
-        elif args.use_minimal_got and initial_paths and GOT_AVAILABLE:
-            # 使用独立的最小化GoT
-            rel_paths = integrate_minimal_got(question, initial_paths)
-            got_info = {
-                "minimal_got": True,
-                "initial_count": len(initial_paths),
-                "enhanced_count": len(rel_paths)
+                "aggregation_performed": got_result.get("statistics", {}).get("aggregated_thoughts", 0) > 0,
+                "feedback_applied": got_result.get("statistics", {}).get("improved_thoughts", 0) > 0
             }
         else:
             rel_paths = initial_paths
             
         if args.debug:
-            print("ID: ", qid)
-            print("Question: ", question)
-            print("Initial paths: ", initial_paths)
+            print(f"\nID: {qid}")
+            print(f"Question: {question}")
+            print(f"Initial paths ({len(initial_paths)}): {initial_paths[:3]}")
             if got_info:
-                print("Enhanced paths: ", rel_paths)
+                print(f"Enhanced paths ({len(rel_paths)}): {rel_paths[:3]}")
+                print(f"Best score: {got_info['best_score']:.3f}")
+                print(f"Statistics: {got_info['statistics']}")
                 
         # Save results
         data_to_save = {
@@ -284,6 +301,13 @@ def gen_prediction(args):
         f.flush()
         
     f.close()
+    
+    # 打印总结统计
+    if args.use_got:
+        logger.info("\n=== GoT Reasoning Summary ===")
+        logger.info(f"Output file: {prediction_file}")
+        logger.info("GoT enhancement completed successfully!")
+        
     return prediction_file
 
 
@@ -293,35 +317,28 @@ if __name__ == "__main__":
     parser.add_argument("--d", "-d", type=str, default="RoG-webqsp")
     parser.add_argument("--split", type=str, default="test")
     parser.add_argument("--output_path", type=str, default="results/gen_rule_path")
-    parser.add_argument("--model_name", type=str, default="Llama-2-7b-hf")
-    parser.add_argument("--model_path", type=str, default="meta-llama/Llama-2-7b-chat-hf")
+    parser.add_argument("--model_name", type=str, default="RoG")
+    parser.add_argument("--model_path", type=str, default="rmanluo/RoG")
     parser.add_argument("--prompt_path", type=str, default="prompts/llama2.txt")
     parser.add_argument("--rel_dict", nargs="+", default=["datasets/KG/fbnet/relations.dict"])
     parser.add_argument("--force", "-f", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--lora", action="store_true")
     parser.add_argument("--max_new_tokens", type=int, default=100)
-    parser.add_argument("--n_beam", type=int, default=1)
+    parser.add_argument("--n_beam", type=int, default=3)
     parser.add_argument("--do_sample", action="store_true")
     
     # GoT相关参数
     parser.add_argument("--use_got", action="store_true", help="Enable Graph of Thoughts reasoning")
-    parser.add_argument("--use_minimal_got", action="store_true", help="Use minimal GoT (safest option)")
-    parser.add_argument("--got_minimal_mode", action="store_true", default=True, help="Use minimal mode in GoT engine")
-    parser.add_argument("--got_iterations", type=int, default=1, help="GoT iterations")
-    parser.add_argument("--got_beam_width", type=int, default=5, help="GoT beam width")
-    parser.add_argument("--got_score_threshold", type=float, default=0.8, help="GoT score threshold")
-    parser.add_argument("--got_enable_feedback", action="store_true", default=False, help="Enable feedback loop")
-    parser.add_argument("--got_use_attention", action="store_true", default=False, help="Use graph attention")
-    parser.add_argument("--got_aggregation", type=str, default="none", 
-                       choices=["adaptive", "greedy", "exhaustive", "none"])
+    parser.add_argument("--got_iterations", type=int, default=3, help="Number of GoT iterations")
+    parser.add_argument("--got_beam_width", type=int, default=10, help="Beam width for thought selection")
+    parser.add_argument("--got_score_threshold", type=float, default=0.5, help="Score threshold")
+    parser.add_argument("--got_enable_feedback", action="store_true", default=True, help="Enable feedback loop")
+    parser.add_argument("--got_use_attention", action="store_true", default=True, help="Use graph attention")
+    parser.add_argument("--got_aggregation", type=str, default="adaptive", 
+                       choices=["adaptive", "greedy", "exhaustive", "none"],
+                       help="Aggregation strategy")
 
     args = parser.parse_args()
-    
-    # 检查GoT是否可用
-    if (args.use_got or args.use_minimal_got) and not GOT_AVAILABLE:
-        print("Warning: GoT requested but modules not available. Running without GoT.")
-        args.use_got = False
-        args.use_minimal_got = False
     
     gen_path = gen_prediction(args)
